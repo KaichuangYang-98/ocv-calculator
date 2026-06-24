@@ -1,0 +1,206 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jun 22 10:16:39 2026
+
+@author: KC.Y
+"""
+
+"""
+SOFC Nernst Equation — OCV & Anode pO₂ Calculator
+GUI built with tkinter (no external dependencies needed)
+
+Usage:
+    python sofc_nernst_calculator.py
+"""
+
+import tkinter as tk
+from tkinter import ttk, font as tkfont
+import math
+
+# ── Constants ────────────────────────────────────────────────────────────────
+R = 8.314       # J/(mol·K)
+F = 96485       # C/mol
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+BG        = "#1e1e2e"
+CARD_BG   = "#2a2a3e"
+ACCENT    = "#5b8dee"
+ACCENT2   = "#a6e3a1"
+TEXT      = "#cdd6f4"
+TEXT_DIM  = "#6c7086"
+BORDER    = "#45475a"
+RESULT_BG = "#181825"
+
+# ── Helper: scientific notation string ───────────────────────────────────────
+def sci_str(val):
+    if val <= 0:
+        return "N/A"
+    exp = int(math.floor(math.log10(abs(val))))
+    mant = val / 10**exp
+    return f"{mant:.2f} × 10^{exp}"
+
+def log10_str(val):
+    if val <= 0:
+        return "N/A"
+    return f"{math.log10(val):.3f}"
+
+
+# ── Main GUI class ────────────────────────────────────────────────────────────
+class NernstApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("SOFC — Nernst OCV / pO₂ Calculator")
+        self.resizable(False, False)
+        self.configure(bg=BG)
+
+        # ── Tkinter variables ─────────────────────────────────────────────────
+        self.var_T   = tk.DoubleVar(value=700.0)   # °C
+        self.var_pc  = tk.DoubleVar(value=0.21)    # pO2 cathode, atm
+        self.var_ocv = tk.DoubleVar(value=0.67)    # OCV, V
+
+        self._build_ui()
+        self._calc()   # initial draw
+
+    # ── UI construction ───────────────────────────────────────────────────────
+    def _build_ui(self):
+        pad = {"padx": 20, "pady": 8}
+
+        # Header
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=20, pady=(18, 0))
+        tk.Label(hdr, text="SOFC  Nernst Equation Calculator",
+                 bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(side="left")
+
+        tk.Label(self,
+                 text="Solves for anode pO₂  from  OCV = (RT/4F) · ln(pO₂,cathode / pO₂,anode)",
+                 bg=BG, fg=TEXT_DIM, font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(2, 14))
+
+        # ── Slider section ────────────────────────────────────────────────────
+        sliders_frame = tk.Frame(self, bg=BG)
+        sliders_frame.pack(fill="x", padx=20, pady=0)
+
+        self._slider_row(sliders_frame, 0,
+                         "Temperature  T",
+                         self.var_T, 500, 1100, 1,
+                         lambda v: f"{float(v):.0f} °C")
+
+        self._slider_row(sliders_frame, 1,
+                         "Cathode pO₂  (air side)",
+                         self.var_pc, 0.01, 1.00, 0.01,
+                         lambda v: f"{float(v):.2f} atm")
+
+        self._slider_row(sliders_frame, 2,
+                         "Measured OCV",
+                         self.var_ocv, 0.10, 1.30, 0.01,
+                         lambda v: f"{float(v):.2f} V")
+
+        # ── Metric cards ──────────────────────────────────────────────────────
+        cards = tk.Frame(self, bg=BG)
+        cards.pack(fill="x", padx=20, pady=(14, 0))
+
+        self.lbl_rtf  = self._metric_card(cards, 0, "RT / 4F", "—", "V")
+        self.lbl_lnr  = self._metric_card(cards, 1, "ln(pO₂,c / pO₂,a)", "—", "")
+        self.lbl_rtf2 = self._metric_card(cards, 2, "T  (Kelvin)", "—", "K")
+        cards.columnconfigure((0, 1, 2), weight=1, uniform="card")
+
+        # ── Result box ────────────────────────────────────────────────────────
+        res = tk.Frame(self, bg=RESULT_BG, bd=0, highlightbackground=BORDER,
+                       highlightthickness=1)
+        res.pack(fill="x", padx=20, pady=14)
+
+        tk.Label(res, text="Anode pO₂  —  result",
+                 bg=RESULT_BG, fg=TEXT, font=("Segoe UI", 10, "bold")
+                 ).pack(anchor="w", padx=14, pady=(12, 4))
+
+        self.lbl_poa   = tk.Label(res, text="—", bg=RESULT_BG, fg=ACCENT,
+                                  font=("Segoe UI", 18, "bold"))
+        self.lbl_poa.pack(anchor="w", padx=14)
+
+        self.lbl_sci   = tk.Label(res, text="", bg=RESULT_BG, fg=TEXT_DIM,
+                                  font=("Segoe UI", 9))
+        self.lbl_sci.pack(anchor="w", padx=14)
+
+        self.lbl_log   = tk.Label(res, text="", bg=RESULT_BG, fg=TEXT_DIM,
+                                  font=("Segoe UI", 9))
+        self.lbl_log.pack(anchor="w", padx=14, pady=(2, 12))
+
+        # ── Formula reminder ──────────────────────────────────────────────────
+        tk.Label(self,
+                 text="Formula:  OCV = (RT/4F) · ln(pO₂,c / pO₂,a)   →   pO₂,a = pO₂,c · exp(−4F·OCV / RT)",
+                 bg=BG, fg=TEXT_DIM, font=("Segoe UI", 8)
+                 ).pack(anchor="w", padx=20, pady=(0, 14))
+
+    def _slider_row(self, parent, row, label, variable, from_, to, res, fmt_fn):
+        """Build a label + slider + live value display row."""
+        parent.rowconfigure(row, pad=4)
+
+        lbl = tk.Label(parent, text=label, bg=BG, fg=TEXT_DIM,
+                       font=("Segoe UI", 9), anchor="w", width=26)
+        lbl.grid(row=row, column=0, sticky="w", pady=4)
+
+        # Value display label
+        val_lbl = tk.Label(parent, text=fmt_fn(variable.get()),
+                           bg=BG, fg=TEXT, font=("Segoe UI", 9, "bold"),
+                           width=10, anchor="e")
+        val_lbl.grid(row=row, column=2, sticky="e", padx=(8, 0))
+
+        def on_change(v, fl=val_lbl, fn=fmt_fn):
+            fl.config(text=fn(v))
+            self._calc()
+
+        sl = ttk.Scale(parent, from_=from_, to=to, orient="horizontal",
+                       variable=variable, command=on_change)
+        sl.grid(row=row, column=1, sticky="ew", padx=(8, 0))
+        parent.columnconfigure(1, weight=1)
+
+    def _metric_card(self, parent, col, label, val, unit):
+        frm = tk.Frame(parent, bg=CARD_BG, bd=0,
+                       highlightbackground=BORDER, highlightthickness=1)
+        frm.grid(row=0, column=col, sticky="nsew", padx=(0, 8) if col < 2 else 0,
+                 pady=0, ipadx=10, ipady=8)
+
+        tk.Label(frm, text=label, bg=CARD_BG, fg=TEXT_DIM,
+                 font=("Segoe UI", 8)).pack(anchor="w")
+
+        val_lbl = tk.Label(frm, text=val, bg=CARD_BG, fg=ACCENT2,
+                           font=("Segoe UI", 13, "bold"))
+        val_lbl.pack(anchor="w")
+
+        if unit:
+            tk.Label(frm, text=unit, bg=CARD_BG, fg=TEXT_DIM,
+                     font=("Segoe UI", 8)).pack(anchor="w")
+        return val_lbl
+
+    # ── Calculation ───────────────────────────────────────────────────────────
+    def _calc(self, *_):
+        T_C  = self.var_T.get()
+        pc   = self.var_pc.get()
+        ocv  = self.var_ocv.get()
+
+        TK   = T_C + 273.15
+        rtf  = (R * TK) / (4 * F)
+
+        ln_ratio = ocv / rtf
+        pa = pc * math.exp(-ln_ratio)  # pO2 anode
+
+        # Update metric cards
+        self.lbl_rtf.config(text=f"{rtf:.5f}")
+        self.lbl_lnr.config(text=f"{ln_ratio:.3f}")
+        self.lbl_rtf2.config(text=f"{TK:.1f}")
+
+        # Update result box
+        self.lbl_poa.config(text=sci_str(pa) + "  atm")
+        self.lbl_sci.config(text=f"= {pa:.4e}  atm")
+        self.lbl_log.config(text=f"log₁₀(pO₂) = {log10_str(pa)}")
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app = NernstApp()
+    # Center on screen
+    app.update_idletasks()
+    w, h = 560, 480
+    sw = app.winfo_screenwidth()
+    sh = app.winfo_screenheight()
+    app.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+    app.mainloop()

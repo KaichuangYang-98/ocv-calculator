@@ -1,0 +1,258 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jun 22 10:26:37 2026
+
+@author: KC.Y
+"""
+
+"""
+SOFC OCV Calculator — H2/H2O fuel (wet hydrogen)
+Uses the full Nernst equation:
+    E = E0(T) + (RT/2F) * ln( pH2 * pO2^0.5 / pH2O )
+
+E0(T) is approximated from the temperature-dependent Gibbs free energy
+of H2O(g) formation using a linear fit valid ~600-1100 C:
+    dG0(T) [J/mol] ≈ -247800 + 55.85*T(K)    (JANAF / Atkins data)
+    E0 = -dG0 / (2F)
+
+GUI built with tkinter — no external dependencies required.
+
+Usage:
+    python sofc_ocv_h2_calculator.py
+"""
+
+import tkinter as tk
+from tkinter import ttk
+import math
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+R = 8.314      # J/(mol·K)
+F = 96485      # C/mol
+
+# ── Colors (dark theme) ───────────────────────────────────────────────────────
+BG        = "#1e1e2e"
+CARD_BG   = "#2a2a3e"
+ACCENT    = "#5b8dee"
+ACCENT2   = "#a6e3a1"
+WARN      = "#f38ba8"
+TEXT      = "#cdd6f4"
+TEXT_DIM  = "#6c7086"
+BORDER    = "#45475a"
+RESULT_BG = "#181825"
+
+
+# ── Thermodynamics ────────────────────────────────────────────────────────────
+def delta_g0(TK):
+    """
+    Standard Gibbs free energy of H2O(g) formation [J/mol] as a function
+    of temperature in Kelvin. Linear approximation from JANAF tables,
+    valid ~800-1400 K (500-1100 C). Returns a negative number.
+    """
+    return -247800.0 + 55.85 * TK   # J/mol  (negative = exothermic)
+
+def e0(TK):
+    """Standard EMF [V] at temperature TK."""
+    return -delta_g0(TK) / (2 * F)
+
+def nernst_ocv(T_C, pH2, pH2O, pO2):
+    """
+    Full OCV via Nernst for H2 + 1/2 O2 -> H2O reaction.
+    All partial pressures in atm (dimensionless ratios, so atm is fine).
+    Returns OCV in Volts.
+    """
+    TK = T_C + 273.15
+    E0 = e0(TK)
+    # avoid log(0)
+    pH2  = max(pH2,  1e-30)
+    pH2O = max(pH2O, 1e-30)
+    pO2  = max(pO2,  1e-30)
+    nernst_term = (R * TK / (2 * F)) * math.log(pH2 * math.sqrt(pO2) / pH2O)
+    return E0 + nernst_term
+
+def sat_vapor_pressure_kPa(T_C):
+    """
+    Antoine equation for water saturation pressure [kPa], valid 1-100 C.
+    log10(P/kPa) = A - B/(C + T_C)
+    """
+    A, B, C = 8.07131, 1730.63, 233.426   # for P in mmHg
+    P_mmHg = 10 ** (A - B / (C + T_C))
+    return P_mmHg * 0.133322              # mmHg -> kPa
+
+
+# ── Main GUI class ─────────────────────────────────────────────────────────────
+class OCVApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("SOFC — H2/H2O OCV Calculator (wet hydrogen)")
+        self.resizable(False, False)
+        self.configure(bg=BG)
+
+        # ── Tkinter variables ─────────────────────────────────────────────────
+        self.var_T      = tk.DoubleVar(value=700.0)   # cell temperature, °C
+        self.var_T_bub  = tk.DoubleVar(value=25.0)    # bubbler temperature, °C
+        self.var_pO2    = tk.DoubleVar(value=0.21)    # cathode pO2, atm
+        # pH2 / pH2O derived from bubbler temperature — shown as read-only
+
+        self._build_ui()
+        self._calc()
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        # Title
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=20, pady=(18, 0))
+        tk.Label(hdr, text="SOFC  OCV Calculator — H\u2082 / H\u2082O fuel",
+                 bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(side="left")
+
+        tk.Label(self,
+                 text="E = E\u2070(T) + (RT/2F) \u00b7 ln( p\u2082\u1d34\u00b2 \u00b7 p\u2092\u2082\u00bd / p\u2071\u2082\u1d3c )",
+                 bg=BG, fg=TEXT_DIM, font=("Segoe UI", 9)
+                 ).pack(anchor="w", padx=20, pady=(2, 14))
+
+        # ── Sliders ───────────────────────────────────────────────────────────
+        sf = tk.Frame(self, bg=BG)
+        sf.pack(fill="x", padx=20)
+        sf.columnconfigure(1, weight=1)
+
+        self._slider_row(sf, 0, "Cell temperature  T",
+                         self.var_T, 500, 1100, 1,
+                         lambda v: f"{float(v):.0f} \u00b0C")
+
+        self._slider_row(sf, 1, "Bubbler temperature  T_bub",
+                         self.var_T_bub, 5, 90, 1,
+                         lambda v: f"{float(v):.0f} \u00b0C")
+
+        self._slider_row(sf, 2, "Cathode pO\u2082  (air side)",
+                         self.var_pO2, 0.01, 1.00, 0.01,
+                         lambda v: f"{float(v):.2f} atm")
+
+        # ── Partial pressure readout ──────────────────────────────────────────
+        pf = tk.Frame(self, bg=BG)
+        pf.pack(fill="x", padx=20, pady=(10, 0))
+        pf.columnconfigure((0, 1, 2, 3), weight=1, uniform="pp")
+
+        self.lbl_pH2  = self._info_card(pf, 0, "p(H\u2082)",        "—", "atm")
+        self.lbl_pH2O = self._info_card(pf, 1, "p(H\u2082O)",       "—", "atm")
+        self.lbl_E0   = self._info_card(pf, 2, "E\u2070(T)",        "—", "V")
+        self.lbl_dG   = self._info_card(pf, 3, "\u0394G\u2070(T)",  "—", "kJ/mol")
+
+        # ── Result box ────────────────────────────────────────────────────────
+        res = tk.Frame(self, bg=RESULT_BG, bd=0,
+                       highlightbackground=BORDER, highlightthickness=1)
+        res.pack(fill="x", padx=20, pady=14)
+
+        tk.Label(res, text="Calculated OCV",
+                 bg=RESULT_BG, fg=TEXT, font=("Segoe UI", 10, "bold")
+                 ).pack(anchor="w", padx=14, pady=(12, 4))
+
+        self.lbl_ocv = tk.Label(res, text="—", bg=RESULT_BG, fg=ACCENT,
+                                font=("Segoe UI", 22, "bold"))
+        self.lbl_ocv.pack(anchor="w", padx=14)
+
+        self.lbl_breakdown = tk.Label(res, text="", bg=RESULT_BG, fg=TEXT_DIM,
+                                      font=("Segoe UI", 9))
+        self.lbl_breakdown.pack(anchor="w", padx=14)
+
+        self.lbl_h2o_pct = tk.Label(res, text="", bg=RESULT_BG, fg=ACCENT2,
+                                    font=("Segoe UI", 9))
+        self.lbl_h2o_pct.pack(anchor="w", padx=14, pady=(2, 12))
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        tk.Label(self,
+                 text="E\u2070(T) from linear fit to JANAF data:  \u0394G\u2070 \u2248 \u2212247800 + 55.85\u00b7T(K)  J/mol",
+                 bg=BG, fg=TEXT_DIM, font=("Segoe UI", 8)
+                 ).pack(anchor="w", padx=20, pady=(0, 14))
+
+    def _slider_row(self, parent, row, label, variable, from_, to, resolution, fmt_fn):
+        parent.rowconfigure(row, pad=4)
+
+        tk.Label(parent, text=label, bg=BG, fg=TEXT_DIM,
+                 font=("Segoe UI", 9), anchor="w", width=28
+                 ).grid(row=row, column=0, sticky="w", pady=4)
+
+        val_lbl = tk.Label(parent, text=fmt_fn(variable.get()),
+                           bg=BG, fg=TEXT, font=("Segoe UI", 9, "bold"),
+                           width=10, anchor="e")
+        val_lbl.grid(row=row, column=2, sticky="e", padx=(8, 0))
+
+        def on_change(v, fl=val_lbl, fn=fmt_fn):
+            fl.config(text=fn(v))
+            self._calc()
+
+        ttk.Scale(parent, from_=from_, to=to, orient="horizontal",
+                  variable=variable, command=on_change
+                  ).grid(row=row, column=1, sticky="ew", padx=(8, 0))
+
+    def _info_card(self, parent, col, label, val, unit):
+        padx = (0, 8) if col < 3 else 0
+        frm = tk.Frame(parent, bg=CARD_BG, bd=0,
+                       highlightbackground=BORDER, highlightthickness=1)
+        frm.grid(row=0, column=col, sticky="nsew", padx=padx, pady=0,
+                 ipadx=8, ipady=6)
+
+        tk.Label(frm, text=label, bg=CARD_BG, fg=TEXT_DIM,
+                 font=("Segoe UI", 8)).pack(anchor="w")
+        val_lbl = tk.Label(frm, text=val, bg=CARD_BG, fg=ACCENT2,
+                           font=("Segoe UI", 11, "bold"))
+        val_lbl.pack(anchor="w")
+        if unit:
+            tk.Label(frm, text=unit, bg=CARD_BG, fg=TEXT_DIM,
+                     font=("Segoe UI", 8)).pack(anchor="w")
+        return val_lbl
+
+    # ── Calculation ───────────────────────────────────────────────────────────
+    def _calc(self, *_):
+        T_C     = self.var_T.get()
+        T_bub   = self.var_T_bub.get()
+        pO2     = self.var_pO2.get()
+
+        # Partial pressures from bubbler saturation
+        P_total = 1.0   # atm
+        pSat_kPa = sat_vapor_pressure_kPa(T_bub)
+        pSat_atm = pSat_kPa / 101.325
+        pSat_atm = min(pSat_atm, 0.999)   # clamp just below 1 atm
+
+        pH2O = pSat_atm
+        pH2  = P_total - pH2O
+
+        # OCV
+        ocv = nernst_ocv(T_C, pH2, pH2O, pO2)
+
+        # E0 and dG0
+        TK = T_C + 273.15
+        E0_val = e0(TK)
+        dG_val = delta_g0(TK) / 1000  # kJ/mol
+
+        nernst_correction = ocv - E0_val
+
+        # ── Update UI ─────────────────────────────────────────────────────────
+        self.lbl_pH2.config(text=f"{pH2:.4f}")
+        self.lbl_pH2O.config(text=f"{pH2O:.4f}")
+        self.lbl_E0.config(text=f"{E0_val:.4f}")
+        self.lbl_dG.config(text=f"{dG_val:.1f}")
+
+        self.lbl_ocv.config(text=f"{ocv:.4f} V",
+                            fg=ACCENT if ocv > 0 else WARN)
+
+        self.lbl_breakdown.config(
+            text=f"E\u2070({T_C:.0f}\u00b0C) = {E0_val:.4f} V    "
+                 f"Nernst correction = {nernst_correction:+.4f} V"
+        )
+
+        h2o_pct  = pH2O / P_total * 100
+        h2_pct   = pH2  / P_total * 100
+        self.lbl_h2o_pct.config(
+            text=f"Anode gas:  H\u2082 {h2_pct:.1f}%  +  H\u2082O {h2o_pct:.1f}%  "
+                 f"(bubbler @ {T_bub:.0f}\u00b0C,  p_sat = {pSat_kPa:.2f} kPa)"
+        )
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app = OCVApp()
+    app.update_idletasks()
+    w, h = 620, 500
+    sw = app.winfo_screenwidth()
+    sh = app.winfo_screenheight()
+    app.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+    app.mainloop()
